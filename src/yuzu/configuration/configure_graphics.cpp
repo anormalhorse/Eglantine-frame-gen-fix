@@ -225,10 +225,6 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
             continue;
         }
 #endif
-        if (setting->Id() == Settings::values.frame_gen.Id()) {
-            continue;
-        }
-
         ConfigurationShared::Widget* widget = [&]() {
             if (setting->Id() == Settings::values.fsr_sharpening_slider.Id()) {
                 // FSR needs a reversed slider and a 0.5 multiplier
@@ -336,6 +332,81 @@ void ConfigureGraphics::Setup(const ConfigurationShared::Builder& builder) {
 
     for (auto widget : hold_api) {
         api_grid_layout->addWidget(widget);
+    }
+
+    // The frame generation options are only editable while frame generation itself is enabled.
+    // They are plain widgets (not paired with the checkbox) so that only "Enable Frame
+    // Generation" ever writes the frame_gen setting.
+    {
+        const auto find_widget = [&](const Settings::BasicSetting& setting) -> QWidget* {
+            const auto it = hold_graphics.find(setting.Id());
+            return it != hold_graphics.end() ? it->second : nullptr;
+        };
+        QWidget* const frame_gen_widget = find_widget(Settings::values.frame_gen);
+        QWidget* const flow_auto_widget = find_widget(Settings::values.frame_gen_flow_scale_auto);
+        QWidget* const flow_scale_widget = find_widget(Settings::values.frame_gen_flow_scale);
+        // Remember whether each widget started out enabled: widgets whose setting cannot be changed
+        // while a game is running are disabled by the shared widget code and must stay that way.
+        std::vector<std::pair<QWidget*, bool>> frame_gen_children;
+        for (QWidget* const child : {
+                 find_widget(Settings::values.frame_gen_type),
+                 find_widget(Settings::values.frame_gen_multiplier),
+                 find_widget(Settings::values.frame_gen_target_rate),
+                 flow_auto_widget,
+                 flow_scale_widget,
+                 find_widget(Settings::values.frame_gen_queue_target),
+                 find_widget(Settings::values.frame_gen_dump_flow),
+             }) {
+            if (child != nullptr) {
+                frame_gen_children.emplace_back(child, child->isEnabled());
+            }
+        }
+        const bool flow_scale_initially_enabled =
+            flow_scale_widget != nullptr && flow_scale_widget->isEnabled();
+        auto* const frame_gen_box =
+            frame_gen_widget ? static_cast<ConfigurationShared::Widget*>(frame_gen_widget)->checkbox
+                             : nullptr;
+        auto* const flow_auto_box =
+            flow_auto_widget ? static_cast<ConfigurationShared::Widget*>(flow_auto_widget)->checkbox
+                             : nullptr;
+
+        // Disabling a whole Widget would also disable its restore button (Qt disables every child),
+        // and the widget's serializer reads a disabled restore button as "using the global value",
+        // which would drop an existing per-game override. So only the controls are disabled, and
+        // the restore button keeps its own state.
+        const auto set_controls_enabled = [](QWidget* widget, bool enabled) {
+            const QPushButton* const restore_button =
+                static_cast<ConfigurationShared::Widget*>(widget)->restore_button;
+            for (QWidget* const control :
+                 widget->findChildren<QWidget*>(QString(), Qt::FindDirectChildrenOnly)) {
+                if (control != restore_button) {
+                    control->setEnabled(enabled);
+                }
+            }
+        };
+        const auto update_frame_gen_enabled = [frame_gen_children, frame_gen_box, flow_auto_box,
+                                               flow_scale_widget, flow_scale_initially_enabled,
+                                               set_controls_enabled]() {
+            const bool enabled = frame_gen_box == nullptr || frame_gen_box->isChecked();
+            for (const auto& [child, initially_enabled] : frame_gen_children) {
+                if (initially_enabled) {
+                    set_controls_enabled(child, enabled);
+                }
+            }
+            if (flow_scale_widget != nullptr && flow_auto_box != nullptr &&
+                flow_scale_initially_enabled) {
+                set_controls_enabled(flow_scale_widget, enabled && !flow_auto_box->isChecked());
+            }
+        };
+        if (frame_gen_box != nullptr) {
+            connect(frame_gen_box, &QCheckBox::toggled, this,
+                    [update_frame_gen_enabled](bool) { update_frame_gen_enabled(); });
+        }
+        if (flow_auto_box != nullptr) {
+            connect(flow_auto_box, &QCheckBox::toggled, this,
+                    [update_frame_gen_enabled](bool) { update_frame_gen_enabled(); });
+        }
+        update_frame_gen_enabled();
     }
 
     // Background color is too specific to build into the new system, so we manage it here
